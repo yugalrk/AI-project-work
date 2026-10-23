@@ -1,0 +1,26 @@
+{
+  "_doc": "Thresholds for post_train_eval.py. 'block' gates decide the verdict; 'warn' gates are reported only. Arm errors in rad.",
+  "offline": {
+    "block": {
+      "arm_error_mean_max": 0.015,
+      "arm_error_p99_max": 0.10,
+      "worst_subtask_error_max": 0.02,
+      "gripper_event_hit_rate_min": 0.95,
+      "robustness_ratio_max": 1.5,
+      "regression_vs_reference_max": 1.05
+    },
+    "warn": {
+      "replan_latency_budget_ms": 166.7,
+      "replan_jump_vs_demo_max": 2.5,
+      "gripper_timing_error_s_max": 0.5
+    }
+  },
+  "online": {
+    "episodes": 5,
+    "block": {
+      "success_rate_min": 0.8,
+      "median_stage_min": 3
+    },
+    "_doc": "The sim result counts only if replaying the recorded demo in the same scene succeeds (sanity check)."
+  }
+}
