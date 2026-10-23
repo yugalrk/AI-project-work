@@ -21,6 +21,7 @@ outputs/<run>/step_XXXXXX/                                      trained checkpoi
 | Data | `fr3_data.py` | Dataset paths, train/val split (`splits.json`: 10 held-out episodes with extreme/random lighting), loader |
 | Data | `label_rand500_colors.py` | Labels each cube episode with cube colours + gripper event frames → `rand500_labels.csv` |
 | Data | `make_subtasks.py` | Per-frame sub-task labels from robot signals (LeRobot-native `subtask_index`), quality checks, review images |
+| Train | `train_curriculum.py` | **Curriculum** training of SmolVLA / pi0 / pi0.5: basic skills → bimanual → full tasks (see [CURRICULUM.md](CURRICULUM.md)) |
 | Train | `train_act_mixed.py` | ACT or SmolVLA (`--policy act/smolvla`) on handover and/or cubes (`--data handover/both`), 6 Hz, own norm stats |
 | Train | `train_act.py` | Plain `lerobot-train` wrapper for ACT on the handover data (30 fps), with Windows fixes |
 | Serve | `serve_policy.py` | Loads any LeRobot checkpoint and answers observations with joint targets over TCP; `--selftest` |
