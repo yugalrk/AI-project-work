@@ -2,9 +2,10 @@
 
 Teaches simple skills first, then harder ones, then the complete long tasks:
 
-  stage 1  reach_grasp        pick up an object with one arm             (handover sub-task 1, cube sub-tasks 1+3)
-  stage 2  transport_place    carry / put an object somewhere, one arm   (handover 2+5, cube 2+4)
-  stage 3  bimanual           two-arm coordination: regrasp + release    (handover 3+4)
+  stage 1  reach_grasp        pick up an object with one arm             ("Pick up the box ...", cube picks)
+  stage 2  transport_place    carry / put an object somewhere, one arm   ("Place the box on the serving tray.", cube put/stack)
+  stage 3  bimanual           two-arm coordination                       ("Hand the box over to the right gripper.")
+  (skills are assigned from the sub-task text, see SKILL_RULES; works with 3- or 5-step handover labels)
   stage 4  full_task          the complete instruction, whole episode    (both datasets)
 
 Each stage samples `new_skill_weight` (default 70%) from the skills it introduces and the rest from earlier
@@ -47,12 +48,23 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 ROOT = Path(__file__).resolve().parent
 DATASETS = {
-    "handover": {"root": ROOT / "Datasets/fr3_handover84_subtasks", "stride": 5, "qa": ROOT / "subtask_qa/handover_qa.json",
-                 # sub-task order within an episode -> skill
-                 "skills": {0: "reach_grasp", 1: "transport_place", 2: "bimanual", 3: "bimanual", 4: "transport_place"}},
-    "cubes": {"root": ROOT / "Datasets/fr3_rand500_subtasks", "stride": 1, "qa": ROOT / "subtask_qa/cubes_qa.json",
-              "skills": {0: "reach_grasp", 1: "transport_place", 2: "reach_grasp", 3: "transport_place"}},
+    "handover": {"root": ROOT / "Datasets/fr3_handover84_subtasks", "stride": 5, "qa": ROOT / "subtask_qa/handover_qa.json"},
+    "cubes": {"root": ROOT / "Datasets/fr3_rand500_subtasks", "stride": 1, "qa": ROOT / "subtask_qa/cubes_qa.json"},
 }
+SKILL_RULES = [  # sub-task text -> skill (first match wins); covers 3- and 5-step handover labels and cube labels
+    (r"^(Hand the box over|Grasp the box with the right|Release the box)", "bimanual"),
+    (r"^Pick up", "reach_grasp"),
+    (r"^(Bring|Place|Put|Stack)", "transport_place"),
+]
+
+
+def skill_of(text):
+    for pat, sk in SKILL_RULES:
+        if re.match(pat, text):
+            return sk
+    return "transport_place"
+
+
 SKILLS = ["reach_grasp", "transport_place", "bimanual", "full_task"]
 DEFAULT_CURRICULUM = {
     "stages": [
@@ -76,6 +88,8 @@ PARAPHRASES = [  # (regex on the original text, alternative templates using the 
     (r"^Bring the box to the handover position\.$", ["Carry the box to the handover point.", "Move the box to the middle for the handover."]),
     (r"^Grasp the box with the right gripper\.$", ["Take the box with the right hand.", "Close the right gripper on the box."]),
     (r"^Release the box from the left gripper\.$", ["Let go of the box with the left hand.", "Open the left gripper and release the box."]),
+    (r"^Hand the box over to the right gripper\.$", ["Pass the box to the right hand.", "Give the box to the right gripper."]),
+    (r"^Place the box on the serving tray\.$", ["Put the box on the tray.", "Set the box down on the serving tray."]),
     (r"^Place the box on the serving tray with the right gripper\.$", ["Put the box on the tray with the right hand.", "Set the box down on the serving tray."]),
     (r"^Hand the box from the left gripper to the right gripper and place it on the serving tray\.$",
      ["Pass the box from the left hand to the right hand, then put it on the tray.",
@@ -157,7 +171,7 @@ def load_tables(name, split_eps, args):
     keep_ep = np.isin(ep, list(split_eps)) & ~np.isin(ep, list(flagged))
     on_grid = fi % cfg["stride"] == 0
     rows = np.flatnonzero(keep_ep & on_grid)
-    skill = np.array([cfg["skills"].get(int(k), "transport_place") for k in sub_order[rows]])
+    skill = np.array([skill_of(sub_txt[int(sub[r])]) for r in rows])
     tab = {"name": name, "root": root, "stride": cfg["stride"], "S": S, "A": A, "ep": ep, "abs_index": df["index"].values,
            "ep_start": ep_start, "ep_end": ep_end, "sub_end": sub_end, "sub_text": [sub_txt[int(i)] for i in sub],
            "full_text": [task_txt[int(i)] for i in df.task_index.values], "rows": rows, "skill": skill,

@@ -7,7 +7,10 @@ How boundaries are found (robot signals only, no vision):
   sub-task, so a few frames of error change nothing the model sees.
 
 Sub-tasks
-- handover (30 fps): pick (left) | bring to handover point | grasp (right) | release (left) | place on tray (right)
+- handover (30 fps), default --handover_subtasks 3:
+      pick up the box (left) | hand the box over to the right gripper | place the box on the tray (right)
+  --handover_subtasks 5 splits the handover into: bring to handover point | grasp (right) | release (left)
+  (the 5 fine steps are always found and checked; the 3-step version merges the middle three)
 - cubes (6 fps):    pick A (left) | put A on B | pick C (right) | stack C on top
   Cube colours come from rand500_labels.csv (label_rand500_colors.py).
 
@@ -161,9 +164,13 @@ def check(name, b, ev, still, S, A, fps):
 
 
 # ---------------------------------------------------------------- texts
-def texts(name, row=None):
+def texts(name, row=None, handover_subtasks=3):
     if name == "handover":
         full = "Hand the box from the left gripper to the right gripper and place it on the serving tray."
+        if handover_subtasks == 3:
+            return full, ["Pick up the box with the left gripper.",
+                          "Hand the box over to the right gripper.",
+                          "Place the box on the serving tray."]
         subs = ["Pick up the box with the left gripper.",
                 "Bring the box to the handover position.",
                 "Grasp the box with the right gripper.",
@@ -248,8 +255,11 @@ def build(name, args):
         g = g.sort_values("frame_index")
         S, A = np.stack(g["observation.state"]), np.stack(g["action"])
         b, ev, still = segment(name, S, A, fps)
-        p = check(name, b, ev, still, S, A, fps)
-        full, subs = texts(name, colors.loc[ep] if colors is not None else None)
+        p = check(name, b, ev, still, S, A, fps)  # always checks the 5 fine steps (validates every event)
+        if name == "handover" and args.handover_subtasks == 3 and b is not None and not p:
+            # pick | hand over (bring + right grasp + left release) | place
+            b = [b[0], b[1], b[4], b[5]]
+        full, subs = texts(name, colors.loc[ep] if colors is not None else None, args.handover_subtasks)
         ep_task[ep] = full
         if p:
             problems[int(ep)] = p
@@ -323,7 +333,7 @@ def build(name, args):
         sub = np.full(len(d), -1, np.int64)
         for ep, g in d.groupby("episode_index"):
             fi = g.frame_index.values
-            for k in range(5):
+            for k in range(len(seg.subtask_order.unique())):
                 if (ep, k) in lookup:
                     s, e, i = lookup[(ep, k)]
                     sub[g.index[(fi >= s) & (fi < e)] - d.index[0]] = i
@@ -366,6 +376,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", choices=["handover", "cubes"])
     ap.add_argument("--no_write", action="store_true", help="only run segmentation + QA")
+    ap.add_argument("--handover_subtasks", type=int, choices=[3, 5], default=3,
+                    help="3 = pick | hand over to right gripper | place on tray;  "
+                         "5 = pick | bring to handover point | right grasp | left release | place")
     args = ap.parse_args()
     for n in ([args.only] if args.only else ["handover", "cubes"]):
         build(n, args)

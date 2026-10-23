@@ -29,12 +29,27 @@ python eval_offline.py --models curriculum_smolvla/final mixed_smolvla/final
 
 ## Sub-tasks and skills
 
-| Skill (difficulty) | Handover sub-tasks | Cube sub-tasks |
+Handover sub-tasks (default, `make_subtasks.py --handover_subtasks 3`):
+
+| # | Sub-task | Frames @30 fps | Skill |
+|---|---|---|---|
+| 1 | Pick up the box with the left gripper. | 0 – 338 (11.3 s) | `reach_grasp` |
+| 2 | Hand the box over to the right gripper. | 338 – 1482 (38.1 s) | `bimanual` |
+| 3 | Place the box on the serving tray. | 1482 – 2247 (25.5 s) | `transport_place` |
+
+`--handover_subtasks 5` splits step 2 into *Bring the box to the handover position* · *Grasp the box with the
+right gripper* · *Release the box from the left gripper* (finer control, same boundaries otherwise).
+Note: "pick up" ends when the grasp is complete; the lift starts the hand-over step, because the demo lifts and
+carries in one continuous motion with no pause in between.
+
+| Skill (difficulty) | Handover | Cubes |
 |---|---|---|
 | 1 `reach_grasp`: one arm picks an object | Pick up the box with the left gripper | Pick up the {A} cube with the left gripper · Pick up the {C} cube with the right gripper |
-| 2 `transport_place`: one arm carries / puts it | Bring the box to the handover position · Place the box on the serving tray with the right gripper | Put the {A} cube on the {B} cube · Stack the {C} cube on top of the {A} cube |
-| 3 `bimanual`: both arms coordinate | Grasp the box with the right gripper (left still holds) · Release the box from the left gripper | — |
+| 2 `transport_place`: one arm carries / puts it | Place the box on the serving tray | Put the {A} cube on the {B} cube · Stack the {C} cube on top of the {A} cube |
+| 3 `bimanual`: both arms coordinate | Hand the box over to the right gripper | — |
 | 4 `full_task`: whole episode, complete instruction | Hand the box from the left gripper to the right gripper and place it on the serving tray | Stack the {A} cube on the {B} cube, then put the {C} cube on top |
+
+Skills are assigned from the sub-task text (`SKILL_RULES` in `train_curriculum.py`), so 3- or 5-step labels both work.
 
 Boundaries come from robot signals (gripper events + the still moment before the next action), every episode
 is checked automatically (order, expected grasp/release inside each sub-task, gripper state, duration
