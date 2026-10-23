@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Training Curves</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb; --text-primary: #0b0b0b; --text-secondary: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --band: rgba(11,11,11,0.035);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --band: rgba(255,255,255,0.04);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --band: rgba(255,255,255,0.04);
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text-primary);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sub { color: var(--text-secondary); margin: 0 0 20px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile, .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; }
+.tile { padding: 12px 14px; }
+.tile .k { color: var(--text-secondary); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.tile .v { font-size: 26px; font-weight: 600; margin-top: 2px; }
+.tile .d { color: var(--muted); font-size: 12px; }
+.swatch { width: 14px; height: 0; border-top: 2px solid; display: inline-block; }
+.swatch.dash { border-top-style: dashed; }
+.card { padding: 14px 14px 8px; margin-bottom: 16px; position: relative; }
+.card h2 { font-size: 15px; margin: 0; }
+.card p { color: var(--text-secondary); margin: 2px 0 6px; font-size: 13px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-secondary); margin: 4px 0 2px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.grid3 .card { margin-bottom: 0; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+svg .stagelabel { fill: var(--text-secondary); font-size: 11px; }
+svg .endlabel { font-size: 11px; fill: var(--text-secondary); }
+.tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+       border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+       display: none; min-width: 160px; z-index: 2; }
+.tip b { display: block; margin-bottom: 4px; }
+.tip div { display: flex; justify-content: space-between; gap: 12px; color: var(--text-secondary); }
+.tip div span:last-child { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+details { margin-top: 8px; }
+summary { cursor: pointer; color: var(--text-secondary); }
+table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; }
+.tablewrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Training curves</h1>
+  <p class="sub" id="subtitle"></p>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card" id="valcard">
+    <h2>Held-out arm-joint error (degrees, log scale)</h2>
+    <p>Mean absolute error of the predicted 20-action chunk vs. the demonstration, on episodes never seen in training. The metric to watch.</p>
+    <div class="legend" id="vallegend"></div>
+    <div id="valchart"></div>
+    <details><summary>Table view</summary><div class="tablewrap" id="valtable"></div></details>
+  </div>
+
+  <div class="grid3">
+    <div class="card"><h2>Training loss (log scale)</h2><p>Flow-matching loss; thin line raw (every 50 steps), thick line smoothed.</p><div id="losschart"></div></div>
+    <div class="card"><h2>Gradient norm</h2><p>Before clipping at 10. Steady and low means stable training.</p><div id="gradchart"></div></div>
+    <div class="card"><h2>Learning rate</h2><p>Warm-up, then cosine decay over all stages.</p><div id="lrchart"></div></div>
+  </div>
+</main>
+<script>
+const DATA = /*DATA*/null;
+const VAL_SERIES = [
+  { key: "handover/full", label: "Handover · full task", color: "var(--series-1)", dash: false },
+  { key: "handover/sub",  label: "Handover · sub-task",  color: "var(--series-2)", dash: true },
+  { key: "cubes/full",    label: "Cubes · full task",    color: "var(--series-3)", dash: false },
+  { key: "cubes/sub",     label: "Cubes · sub-task",     color: "var(--series-4)", dash: true },
+];
+const STAGE_NAMES = { stage1_reach_grasp: "1 · grasp", stage2_transport_place: "2 · transport", stage3_bimanual: "3 · two-arm", stage4_full_task: "4 · full task" };
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+const fmt = (v, d = 2) => (Math.abs(v) < 0.01 && v !== 0) ? v.toExponential(1) : v.toFixed(d);
+
+function niceLogTicks(lo, hi) {
+  const t = []; for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) for (const m of [1, 2, 5]) { const v = m * 10 ** e; if (v >= lo * 0.999 && v <= hi * 1.001) t.push(v); } return t;
+}
+function niceTicks(lo, hi, n = 4) {
+  const span = hi - lo, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= step0); const t = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-12; v += step) t.push(+v.toPrecision(10)); return t;
+}
+
+function chart(host, { series, log = false, height = 300, width = 1000, yFmt = v => fmt(v), unit = "", endLabels = false, yMin }) {
+  const W = width, H = height, m = { l: 52, r: endLabels ? 150 : 16, t: 22, b: 28 };
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" }, host);
+  const xs = DATA.stages.length ? DATA.stages[DATA.stages.length - 1].end : Math.max(...series.flatMap(s => s.pts.map(p => p.x)));
+  const ys = series.flatMap(s => s.pts.map(p => p.y)).filter(v => v > 0 || !log);
+  let lo = yMin ?? Math.min(...ys), hi = Math.max(...ys);
+  if (log) { lo = lo / 1.25; hi = hi * 1.25; } else { lo = Math.min(0, lo); hi = hi * 1.08; }
+  const X = x => m.l + (x / xs) * (W - m.l - m.r);
+  const Y = log ? y => m.t + (Math.log(hi) - Math.log(Math.max(y, lo))) / (Math.log(hi) - Math.log(lo)) * (H - m.t - m.b)
+                : y => m.t + (hi - y) / (hi - lo) * (H - m.t - m.b);
+  // stage bands
+  DATA.stages.forEach((s, i) => {
+    if (i % 2 === 1) el("rect", { x: X(s.start), y: m.t, width: X(s.end) - X(s.start), height: H - m.t - m.b, fill: "var(--band)" }, svg);
+    if (i > 0) el("line", { x1: X(s.start), x2: X(s.start), y1: m.t, y2: H - m.b, stroke: "var(--axis)", "stroke-width": 1, "stroke-dasharray": "2 3" }, svg);
+    const t = el("text", { x: X(s.start) + 4, y: m.t - 7, class: "stagelabel" }, svg); t.textContent = STAGE_NAMES[s.name] || s.name;
+  });
+  // grid + y ticks
+  const yt = log ? niceLogTicks(lo, hi) : niceTicks(lo, hi);
+  yt.forEach(v => { el("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: "var(--grid)", "stroke-width": 1 }, svg);
+    const t = el("text", { x: m.l - 6, y: Y(v) + 4, "text-anchor": "end" }, svg); t.textContent = yFmt(v) + unit; });
+  el("line", { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, stroke: "var(--axis)", "stroke-width": 1 }, svg);
+  niceTicks(0, xs, 5).forEach(v => { const t = el("text", { x: X(v), y: H - m.b + 16, "text-anchor": "middle" }, svg); t.textContent = v >= 1000 ? (v / 1000) + "k" : v; });
+  // lines
+  series.forEach(s => {
+    const d = s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+    el("path", { d, fill: "none", stroke: s.color, "stroke-width": s.width ?? 2, "stroke-opacity": s.opacity ?? 1,
+                 "stroke-dasharray": s.dash ? "6 4" : "none", "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    if (s.markers) s.pts.forEach(p => el("circle", { cx: X(p.x), cy: Y(p.y), r: 4, fill: s.color, stroke: "var(--surface-1)", "stroke-width": 2 }, svg));
+  });
+  if (endLabels) { // direct labels at line ends, nudged apart
+    const ends = series.map(s => ({ s, y: Y(s.pts[s.pts.length - 1].y) })).sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 14) ends[i].y = ends[i - 1].y + 14;
+    ends.forEach(({ s, y }) => { const last = s.pts[s.pts.length - 1];
+      const t = el("text", { x: W - m.r + 8, y: y + 4, class: "endlabel" }, svg); t.textContent = `${s.short} ${yFmt(last.y)}${unit}`; });
+  }
+  // hover: crosshair + tooltip at the nearest logged step
+  const hair = el("line", { y1: m.t, y2: H - m.b, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }, svg);
+  const dots = series.filter(s => s.hover !== false).map(s => el("circle", { r: 4, fill: s.color, stroke: "var(--surface-1)", "stroke-width": 2, visibility: "hidden" }, svg));
+  const tip = document.createElement("div"); tip.className = "tip"; host.parentElement.appendChild(tip);
+  const hit = el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, svg);
+  const hs = series.filter(s => s.hover !== false);
+  hit.addEventListener("pointermove", ev => {
+    const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    const xv = (p.x - m.l) / (W - m.l - m.r) * xs;
+    const near = hs[0].pts.reduce((a, b) => Math.abs(b.x - xv) < Math.abs(a.x - xv) ? b : a);
+    hair.setAttribute("x1", X(near.x)); hair.setAttribute("x2", X(near.x)); hair.setAttribute("visibility", "visible");
+    const stage = DATA.stages.find(s => near.x > s.start && near.x <= s.end) || DATA.stages[0];
+    let html = `<b>Step ${near.x.toLocaleString()} · ${STAGE_NAMES[stage?.name] || ""}</b>`;
+    hs.forEach((s, i) => { const q = s.pts.find(p => p.x === near.x); if (!q) { dots[i].setAttribute("visibility", "hidden"); return; }
+      dots[i].setAttribute("cx", X(q.x)); dots[i].setAttribute("cy", Y(q.y)); dots[i].setAttribute("visibility", "visible");
+      html += `<div><span>${s.label}</span><span>${yFmt(q.y)}${unit}</span></div>`; });
+    tip.innerHTML = html; tip.style.display = "block";
+    const box = host.parentElement.getBoundingClientRect(), sx = ev.clientX - box.left, sy = ev.clientY - box.top;
+    tip.style.left = Math.min(sx + 14, box.width - tip.offsetWidth - 8) + "px"; tip.style.top = (sy + 14) + "px";
+  });
+  hit.addEventListener("pointerleave", () => { tip.style.display = "none"; hair.setAttribute("visibility", "hidden"); dots.forEach(d => d.setAttribute("visibility", "hidden")); });
+}
+
+function ema(pts, a = 0.15) { let s = null; return pts.map(p => ({ x: p.x, y: s = s === null ? p.y : a * p.y + (1 - a) * s })); }
+
+const tr = DATA.train, va = DATA.val, last = va[va.length - 1], first = va[0];
+document.getElementById("subtitle").textContent =
+  `${DATA.run} · ${tr.length ? tr[tr.length - 1].step.toLocaleString() : 0} steps · ${va.length} validations · validation every 1k steps and at each stage end`;
+const tiles = document.getElementById("tiles");
+VAL_SERIES.forEach(s => {
+  const d = document.createElement("div"); d.className = "tile";
+  d.innerHTML = `<div class="k"><i class="swatch${s.dash ? " dash" : ""}" style="border-color:${s.color}"></i>${s.label}</div>
+    <div class="v">${last[s.key].toFixed(2)}°</div><div class="d">final · was ${first[s.key].toFixed(1)}° at step ${first.step.toLocaleString()}</div>`;
+  tiles.appendChild(d);
+});
+const leg = document.getElementById("vallegend");
+VAL_SERIES.forEach(s => { const sp = document.createElement("span"); sp.innerHTML = `<i class="swatch${s.dash ? " dash" : ""}" style="border-color:${s.color}"></i>${s.label}`; leg.appendChild(sp); });
+
+chart(document.getElementById("valchart"), {
+  log: true, height: 340, unit: "°", endLabels: true, yFmt: v => v >= 1 ? v.toFixed(v >= 10 ? 0 : 1) : v.toFixed(2),
+  series: VAL_SERIES.map(s => ({ ...s, short: s.label.replace(" · full task", " full").replace(" · sub-task", " sub"), markers: true,
+                                 pts: va.map(v => ({ x: v.step, y: v[s.key] })) })),
+});
+const lossPts = tr.map(t => ({ x: t.step, y: t.loss }));
+chart(document.getElementById("losschart"), { log: true, height: 260, width: 440, yFmt: v => v >= 0.1 ? v.toFixed(1) : v.toFixed(2), series: [
+  { label: "raw", color: "var(--series-1)", width: 1, opacity: 0.35, pts: lossPts, hover: true },
+  { label: "smoothed", color: "var(--series-1)", width: 2, pts: ema(lossPts) } ] });
+chart(document.getElementById("gradchart"), { height: 260, width: 440, yFmt: v => v.toFixed(1), series: [
+  { label: "grad norm", color: "var(--series-1)", width: 2, pts: tr.map(t => ({ x: t.step, y: t.grad })) } ] });
+chart(document.getElementById("lrchart"), { height: 260, width: 440, yFmt: v => v === 0 ? "0" : (v * 1e5).toFixed(0) + "e-5", series: [
+  { label: "learning rate", color: "var(--series-1)", width: 2, pts: tr.map(t => ({ x: t.step, y: t.lr })) } ] });
+
+const tbl = ["<table><tr><th>Step</th>" + VAL_SERIES.map(s => `<th>${s.label} (°)</th>`).join("") + "</tr>"];
+va.forEach(v => tbl.push(`<tr><td>${v.step.toLocaleString()}</td>` + VAL_SERIES.map(s => `<td>${v[s.key].toFixed(2)}</td>`).join("") + "</tr>"));
+document.getElementById("valtable").innerHTML = tbl.join("") + "</table>";
+</script>
+</body>
+</html>

@@ -60,3 +60,19 @@ python serve_policy.py --checkpoint outputs/smolvla_handover/step_003000 --port 
 - Policies run at 6 Hz with 20-action chunks (3.3 s); the 30 fps handover data is sampled every 5th frame.
 - SmolVLA needs the exact training instruction at inference (`eval_isaac.py` sends it).
 - `eval_isaac.py` has not been run on a real Isaac Sim install yet; expect small API fixes on first run.
+
+## Post-training pipeline, UI, serving and Isaac Sim tools
+
+| Area | Files |
+|---|---|
+| Training additions | `train_curriculum.py`: LoRA (`--lora_rank`), gradient accumulation (`--grad_accum`), crash-safe `--save_every` / `--resume`; `run_smolvla_queue.ps1` |
+| Training curves | `plot_training.py` + `plot_training_template.html` -> `outputs/<run>/training_curves.html` |
+| Post-training eval | `post_train_eval.py`: offline eval + headless Isaac Sim eval (with a demo-replay sanity check) + gates (`deploy_gates.json`) -> DEPLOY / MORE TRAINING / HOLD |
+| Pipeline UI | `pipeline_ui.py` + `pipeline_ui.html` (http://127.0.0.1:8765): runs, evaluate / auto-evaluate, verdicts, deploy with staging + health check, stop / start / rollback serving on port 8090, re-plan and grasp-extension settings |
+| Serving for Isaac Sim | `Environment/fr3duo_policy_server.py` (HTTP :8090; `--n_action_steps`, `--grasp_extend`), `Environment/fr3duo_pi05_server.py` (openpi pi0.5, WSL) |
+| Isaac Sim (Script Editor) | `Environment/fr3duo_isaac_client.py` (manual runs), `Environment/fr3duo_isaac_eval.py` (scored runs: task physics, held-out lighting, stage score) |
+| Diagnostics | `tools/` (grasp timing vs demo, sim-vs-training camera gap, pi0.5 input probes, openpi / gh install in WSL) |
+
+Known sim gap: the hand-out scene lacks the recorder's override layers (`cameras_v9_overrides.usda`,
+`rand_v7_boxpose_overrides.usda`, `handover_root_v9_light_boxpose.usda`; listed in the dataset's
+`fr3_episodes_extra.jsonl` stack_lock), so even the recorded demo does not grasp the box in the sim.

@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eval Pipeline</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --line: #e1e0d9; --border: rgba(11,11,11,.10); --accent: #2a78d6; --accent-ink: #fff;
+  --good: #0ca30c; --good-bg: rgba(12,163,12,.10); --warn: #b07800; --warn-bg: rgba(250,178,25,.16);
+  --bad: #d03b3b; --bad-bg: rgba(208,59,59,.10); --info-bg: rgba(42,120,214,.10);
+  --code: #f0efec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --line: #2c2c2a; --border: rgba(255,255,255,.10); --accent: #3987e5;
+    --good-bg: rgba(12,163,12,.18); --warn: #fab219; --warn-bg: rgba(250,178,25,.14); --bad-bg: rgba(208,59,59,.18);
+    --info-bg: rgba(57,135,229,.16); --code: #262624;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --line: #2c2c2a; --border: rgba(255,255,255,.10); --accent: #3987e5;
+  --good-bg: rgba(12,163,12,.18); --warn: #fab219; --warn-bg: rgba(250,178,25,.14); --bad-bg: rgba(208,59,59,.18);
+  --info-bg: rgba(57,135,229,.16); --code: #262624;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-bottom: 18px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+.sub { color: var(--ink-2); font-size: 13px; }
+.spacer { flex: 1; }
+#prod { min-width: 0; overflow-wrap: anywhere; }
+.meta, .run .row { overflow-wrap: anywhere; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.chip.good { background: var(--good-bg); color: var(--good); }
+.chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.bad { background: var(--bad-bg); color: var(--bad); }
+.chip.info { background: var(--info-bg); color: var(--accent); }
+.chip.muted { background: var(--code); color: var(--ink-2); }
+button, select { font: inherit; font-size: 13px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); padding: 5px 10px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button:disabled { opacity: .45; cursor: default; }
+select { max-width: 100%; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 13px; }
+.toggle input { width: 34px; height: 20px; appearance: none; background: var(--line); border-radius: 999px; position: relative; cursor: pointer; transition: background .15s; margin: 0; }
+.toggle input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.toggle input:checked { background: var(--accent); }
+.toggle input:checked::after { left: 16px; }
+.run { border-top: 1px solid var(--line); padding: 12px 0; }
+.run:first-of-type { border-top: 0; padding-top: 2px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.name { font-weight: 600; word-break: break-all; }
+.bar { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; flex: 1; min-width: 120px; }
+.bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.meta { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.controls { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+pre.log { background: var(--code); border-radius: 8px; padding: 10px; font: 12px/1.4 ui-monospace, Consolas, monospace; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+.job { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.job:first-child { border-top: 0; }
+.result { border-top: 1px solid var(--line); padding: 10px 0; }
+.result:first-child { border-top: 0; padding-top: 0; }
+.result ul { margin: 6px 0 0 18px; padding: 0; color: var(--ink-2); font-size: 13px; }
+.empty { color: var(--muted); font-size: 13px; }
+dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--ink); padding: 0; width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+.dlg-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--surface); }
+.md { padding: 4px 16px 16px; overflow-x: auto; }
+.md h1 { font-size: 17px; margin: 14px 0 6px; } .md h2 { font-size: 15px; margin: 16px 0 6px; }
+.md table { border-collapse: collapse; font-size: 13px; margin: 6px 0; font-variant-numeric: tabular-nums; }
+.md th, .md td { border-bottom: 1px solid var(--line); padding: 4px 10px; text-align: left; }
+.md code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.md td.FAIL { color: var(--bad); font-weight: 600; } .md td.warn { color: var(--warn); font-weight: 600; } .md td.pass { color: var(--good); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Eval pipeline</h1>
+      <div class="sub">After training: offline eval + Isaac Sim eval → gates → DEPLOY or MORE TRAINING</div>
+    </div>
+    <div class="spacer"></div>
+    <div id="prod" class="sub"></div>
+    <label class="toggle" title="Queue an evaluation as soon as a run's final/ checkpoint appears">
+      <input type="checkbox" id="auto"> Auto-evaluate finished runs
+    </label>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Training runs</h2>
+      <div id="runs"><div class="empty">Loading…</div></div>
+    </section>
+    <div>
+      <section class="card">
+        <h2>Serving <span class="meta" style="font-weight:400">· port 8090, used by the Isaac Sim scripts</span></h2>
+        <div id="serving"><div class="empty">Checking…</div></div>
+      </section>
+      <section class="card">
+        <h2>Jobs</h2>
+        <div id="current"></div>
+        <div id="queue"></div>
+        <pre class="log" id="log" hidden></pre>
+        <div id="done" style="margin-top:8px"></div>
+      </section>
+      <section class="card">
+        <h2>Verdicts</h2>
+        <div id="results"><div class="empty">No evaluations yet.</div></div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <div class="dlg-head"><strong id="dlg-title">Summary</strong><span class="spacer"></span><button onclick="dlg.close()">Close</button></div>
+  <div class="md" id="dlg-body"></div>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+let state = null, logJob = null, choices = {};
+const lastHTML = {};
+function setHTML(id, html) {  // write only when the content changed, and never under a focused dropdown
+  const el = $(id);
+  if (lastHTML[id] === html || (el.contains(document.activeElement) && document.activeElement.tagName === "SELECT")) return;
+  el.innerHTML = lastHTML[id] = html;
+}
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = t => { if (!t) return ""; const s = Date.now() / 1000 - t; return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
+const deg = r => (r * 180 / Math.PI).toFixed(2) + "°";
+const verdictChip = v => {
+  const k = v === "DEPLOY" ? ["good", "✓"] : v.startsWith("MORE") ? ["bad", "↻"] : ["warn", "⏸"];
+  return `<span class="chip ${k[0]}">${k[1]} ${esc(v)}</span>`;
+};
+const statusChip = s => ({ training: '<span class="chip info">● training</span>', done: '<span class="chip good">✓ done</span>',
+  stopped: '<span class="chip warn">■ stopped</span>', imported: '<span class="chip muted">imported</span>' }[s] || esc(s));
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  return path.startsWith("/api/state") ? r.json() : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
+}
+
+function renderRuns() {
+  const busy = new Set([state.jobs.current?.checkpoint, ...state.jobs.queue.map(j => j.checkpoint)].filter(Boolean));
+  const latest = {};
+  state.results.forEach(r => { const run = r.checkpoint.split("/")[1]; if (!latest[run]) latest[run] = r; });
+  setHTML("runs", state.runs.map(r => {
+    const c = choices[r.name] || {};
+    const ck = c.ckpt || (r.checkpoints.includes("final") ? "final" : r.checkpoints[r.checkpoints.length - 1]);
+    const path = `outputs/${r.name}/${ck}`;
+    const pct = r.steps ? Math.round(100 * r.step / r.steps) : (r.has_final ? 100 : 0);
+    const val = r.val ? Object.entries(r.val).filter(([k]) => k.endsWith("/full")).map(([k, v]) => `${k.split("/")[0]} ${deg(v)}`).join(" · ") : "";
+    const lv = latest[r.name];
+    return `<div class="run">
+      <div class="row"><span class="name">${esc(r.name)}</span>${statusChip(r.status)}${lv ? verdictChip(lv.verdict) : ""}</div>
+      <div class="row" style="margin-top:6px">
+        <div class="bar"><i style="width:${pct}%"></i></div>
+        <span class="meta">${r.steps ? `step ${r.step.toLocaleString()} / ${r.steps.toLocaleString()}` : (r.has_final ? "complete" : "")}
+        ${r.status === "training" && r.eta_min != null ? ` · ~${r.eta_min} min left` : ""}${r.updated ? ` · log ${ago(r.updated)}` : ""}</span>
+      </div>
+      ${val ? `<div class="meta" style="margin-top:4px">held-out arm error (full task): ${esc(val)}</div>` : ""}
+      ${r.checkpoints.length ? `<div class="controls">
+        <select data-run="${esc(r.name)}" data-k="ckpt">${r.checkpoints.map(x => `<option ${x === ck ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>
+        <select data-run="${esc(r.name)}" data-k="sim" title="Online evaluation">
+          ${[["auto", "sim: headless Isaac"], ["skip", "sim: skip (offline only)"]].map(([v, l]) => `<option value="${v}" ${(c.sim || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
+        <select data-run="${esc(r.name)}" data-k="ref" title="Regression reference (offline result of the model to beat)">
+          <option value="">reference: ${state.default_reference ? "deployed model" : "none"}</option>
+          ${state.references.map(x => `<option value="${esc(x)}" ${c.ref === x ? "selected" : ""}>vs ${esc(x.split("/").pop().replace(".json", ""))}</option>`).join("")}
+        </select>
+        <button class="primary" data-eval="${esc(path)}" data-run="${esc(r.name)}" ${busy.has(path) || r.status === "training" ? "disabled" : ""}>
+          ${busy.has(path) ? "Queued" : "Evaluate"}</button>
+      </div>` : `<div class="meta" style="margin-top:6px">no checkpoint yet</div>`}
+    </div>`;
+  }).join("") || `<div class="empty">No runs in outputs/.</div>`);
+}
+
+function renderJobs() {
+  const j = state.jobs;
+  setHTML("current", j.current ? `<div class="job"><span class="chip info">● running</span><span class="name">${esc(j.current.checkpoint)}</span>
+    <span class="meta">${esc(j.current.reason)} · started ${ago(j.current.started)}</span><span class="spacer"></span>
+    <button data-cancel="${j.current.id}">Stop</button></div>` : `<div class="empty">Idle. Click Evaluate on a run${state.jobs.auto ? ", or wait for a run to finish" : ""}.</div>`);
+  setHTML("queue", j.queue.map(q => `<div class="job"><span class="chip muted">queued</span><span class="name">${esc(q.checkpoint)}</span>
+    <span class="meta">${esc(q.reason)}</span><span class="spacer"></span><button data-cancel="${q.id}">Remove</button></div>`).join(""));
+  setHTML("done", j.done.slice(0, 5).map(d => `<div class="job">
+    <span class="chip ${d.state === "finished" ? "good" : d.state === "cancelled" ? "muted" : "bad"}">${esc(d.state)}</span>
+    <span class="name">${esc(d.checkpoint)}</span><span class="meta">${ago(d.ended)}</span><span class="spacer"></span>
+    <button data-log="${d.id}">Log</button>${d.result_dir ? `<button data-summary="${esc(d.result_dir)}">Summary</button>` : ""}</div>`).join(""));
+  logJob = j.current ? j.current.id : (logJob && j.done.some(d => d.id === logJob) ? logJob : null);
+}
+
+function renderServing() {
+  const s = state.serving, prod = state.production;
+  const live = s.live ? `<span class="chip good">● live</span>` : `<span class="chip muted">○ not serving</span>`;
+  const replan = (s.n_action_steps ? ` · re-plans every ${s.n_action_steps} of ${s.chunk_size} actions` : "")
+    + (s.grasp_extend_s ? ` · grasp extended ${s.grasp_extend_s} s` : "");
+  const what = s.live ? `<span class="name">${esc(s.checkpoint || "unknown model")}</span><span class="meta">${esc(s.policy_type || "")}${s.fake ? " · FAKE" : ""}${replan} · pid ${s.pid} · up ${ago(s.since).replace(" ago", "")}</span>`
+                      : `<span class="meta">Nothing answers on http://127.0.0.1:${s.port}</span>`;
+  const differs = s.live && prod && s.checkpoint && !s.checkpoint.endsWith(prod.checkpoint.replace(/^outputs\//, ""));
+  setHTML("serving", `<div class="row">${live}${s.busy ? `<span class="chip info">… ${esc(s.busy)}</span>` : ""}${what}</div>
+    ${differs ? `<div class="meta" style="margin-top:4px">Note: this is not the recorded deployment (${esc(prod.checkpoint)}); it was started outside the UI or by Start.</div>` : ""}
+    ${s.message ? `<div class="meta" style="margin-top:6px">${esc(s.message)}</div>` : ""}
+    <div class="controls">
+      <select id="nas" title="Actions executed from each predicted 20-action chunk before the model looks again (6 Hz)">
+        ${[["", "re-plan: model default (20 = 3.3 s)"], ["10", "re-plan every 10 (1.7 s)"], ["5", "re-plan every 5 (0.8 s)"], ["1", "re-plan every step"]]
+          .map(([v, l]) => `<option value="${v}" ${(choices.nas ?? String(prod?.n_action_steps ?? "")) === v ? "selected" : ""}>${l}</option>`).join("")}
+      </select>
+      <select id="grasp" title="When the model first closes a gripper: keep it open and continue the approach for this long, then close (no retraining)">
+        ${[["", "grasp: as the model does"], ["1", "grasp: approach +1.0 s"], ["1.5", "grasp: approach +1.5 s"], ["2", "grasp: approach +2.0 s"]]
+          .map(([v, l]) => `<option value="${v}" ${(choices.grasp ?? String(prod?.grasp_extend ?? "")) === v ? "selected" : ""}>${l}</option>`).join("")}
+      </select>
+      <button data-serve="stop" ${!s.live || s.busy ? "disabled" : ""}>Stop serving</button>
+      <button data-serve="start" ${s.busy || !prod ? "disabled" : ""} title="${prod ? "Serve " + esc(prod.checkpoint) + " with the selected re-plan setting (restarts it if running)" : "Deploy a model first"}">${s.live ? "Restart" : "Start"}${prod ? " deployed model" : ""}</button>
+      <button data-serve="rollback" ${s.busy || !prod?.previous ? "disabled" : ""} title="${prod?.previous ? "Deploy " + esc(prod.previous.checkpoint) : "No previous deployment"}">Rollback</button>
+    </div>`);
+}
+
+function renderResults() {
+  const prod = state.production;
+  setHTML("prod", prod ? `Deployed: <strong>${esc(prod.checkpoint)}</strong> <span class="meta">(${esc(prod.promoted_at)})</span>` : `<span class="meta">Nothing deployed yet</span>`);
+  setHTML("results", state.results.map(r => `<div class="result">
+    <div class="row">${verdictChip(r.verdict)}<span class="name">${esc(r.checkpoint)}</span><span class="meta">${ago(r.time)} · sim ${esc(r.online)}</span></div>
+    ${r.todo.length ? `<ul>${r.todo.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+    <div class="controls"><button data-summary="${esc(r.dir)}">Full summary</button>
+      <button data-promote="${esc(r.checkpoint)}" data-dir="${esc(r.dir)}" data-verdict="${esc(r.verdict)}"
+        ${(prod && prod.checkpoint === r.checkpoint) || state.serving.busy ? "disabled" : ""}>${prod && prod.checkpoint === r.checkpoint ? "Deployed" : "Deploy"}</button></div>
+  </div>`).join("") || `<div class="empty">No evaluations yet.</div>`);
+}
+
+async function refresh() {
+  try { state = await api("/api/state"); } catch { return; }
+  $("auto").checked = state.jobs.auto;
+  renderRuns(); renderServing(); renderJobs(); renderResults();
+  if (logJob) { const t = await api(`/api/log?id=${logJob}`); const el = $("log"); const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+    el.hidden = false; el.textContent = t; if (atEnd) el.scrollTop = el.scrollHeight; } else $("log").hidden = true;
+}
+
+function md(text) {
+  const out = [], lines = text.split("\n"); let i = 0;
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`(.+?)`/g, "<code>$1</code>");
+  while (i < lines.length) {
+    const l = lines[i];
+    if (l.startsWith("|")) {
+      const rows = []; while (i < lines.length && lines[i].startsWith("|")) rows.push(lines[i++]);
+      const cells = r => r.slice(1, -1).split("|").map(c => c.trim());
+      out.push("<table><tr>" + cells(rows[0]).map(c => `<th>${inline(c)}</th>`).join("") + "</tr>" +
+        rows.slice(2).map(r => "<tr>" + cells(r).map(c => `<td class="${/^(pass|FAIL|warn)$/.test(c) ? c : ""}">${inline(c)}</td>`).join("") + "</tr>").join("") + "</table>");
+      continue;
+    }
+    if (l.startsWith("## ")) out.push(`<h2>${inline(l.slice(3))}</h2>`);
+    else if (l.startsWith("# ")) out.push(`<h1>${inline(l.slice(2))}</h1>`);
+    else if (l.startsWith("- ")) { const items = []; while (i < lines.length && lines[i].startsWith("- ")) items.push(`<li>${inline(lines[i++].slice(2))}</li>`); out.push(`<ul>${items.join("")}</ul>`); continue; }
+    else if (l.trim()) out.push(`<p>${inline(l)}</p>`);
+    i++;
+  }
+  return out.join("");
+}
+
+document.addEventListener("change", e => {
+  const t = e.target;
+  if (t.id === "auto") return api("/api/auto", { enabled: t.checked }).then(refresh);
+  if (t.id === "nas") return void (choices.nas = t.value);
+  if (t.id === "grasp") return void (choices.grasp = t.value);
+  if (t.dataset.run) { (choices[t.dataset.run] ||= {})[t.dataset.k] = t.value; if (t.dataset.k === "ckpt") renderRuns(); }
+});
+document.addEventListener("click", async e => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.eval) { const c = choices[t.dataset.run] || {}; t.disabled = true;
+    await api("/api/evaluate", { checkpoint: t.dataset.eval, sim: c.sim || "auto", reference: c.ref || null }); refresh(); }
+  else if (t.dataset.cancel) { await api("/api/cancel", { id: t.dataset.cancel }); refresh(); }
+  else if (t.dataset.log) { logJob = t.dataset.log; refresh(); }
+  else if (t.dataset.summary) { $("dlg-title").textContent = t.dataset.summary; $("dlg-body").innerHTML = md(await api(`/api/summary?dir=${encodeURIComponent(t.dataset.summary)}`)); $("dlg").showModal(); }
+  else if (t.dataset.promote) {
+    const msg = `Deploy ${t.dataset.promote}?\n\nIt is loaded on port 8091 and health-checked first; only then does it replace what serves port 8090.` +
+      (t.dataset.verdict !== "DEPLOY" ? `\n\nThe verdict is "${t.dataset.verdict}", not DEPLOY.` : "");
+    if (!confirm(msg)) return;
+    await api("/api/promote", { checkpoint: t.dataset.promote, dir: t.dataset.dir, verdict: t.dataset.verdict,
+      n_action_steps: choices.nas ? Number(choices.nas) : null, grasp_extend: choices.grasp ? Number(choices.grasp) : null }); refresh();
+  }
+  else if (t.dataset.serve) {
+    const s = state.serving, labels = { stop: `Stop serving ${s.checkpoint || "the model"} on port 8090? Isaac Sim runs will fail until a model is served again.`,
+      start: `Serve ${state.production?.checkpoint} on port 8090?`, rollback: `Deploy the previous model ${state.production?.previous?.checkpoint}?` };
+    if (!confirm(labels[t.dataset.serve])) return;
+    const body = {};
+    if (t.dataset.serve === "start") {
+      if (choices.nas !== undefined) body.n_action_steps = choices.nas ? Number(choices.nas) : null;
+      if (choices.grasp !== undefined) body.grasp_extend = choices.grasp ? Number(choices.grasp) : null;
+    }
+    await api(`/api/serve/${t.dataset.serve}`, body); refresh();
+  }
+});
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>

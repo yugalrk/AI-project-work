@@ -1,6 +1,7 @@
 # models and data are shared separately, never committed
 Datasets/
-Environment/
+Environment/*
+!Environment/*.py
 outputs/
 checkpoints/
 scene/
@@ -17,3 +18,8 @@ __pycache__/
 *.pyc
 .venv/
 *.log
+Dataset/
+deploy/
+trained checkpoint/
+*.pt
+*.tar

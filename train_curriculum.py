@@ -263,6 +263,90 @@ def norm_stats(tables):
 BASES = {"smolvla": "lerobot/smolvla_base", "pi0": "lerobot/pi0_base", "pi05": "lerobot/pi05_base"}
 
 
+# ------------------------------------------------------------------ LoRA
+class LoRALinear(torch.nn.Module):
+    """y = base(x) + (alpha / r) * B(A(dropout(x))); base frozen, B starts at zero (no change at step 0)."""
+
+    def __init__(self, base, r, alpha, dropout):
+        super().__init__()
+        self.base, self.scale = base, alpha / r
+        for p in base.parameters():
+            p.requires_grad = False
+        dev = base.weight.device
+        self.lora_A = torch.nn.Parameter(torch.empty(r, base.in_features, device=dev, dtype=torch.float32))
+        self.lora_B = torch.nn.Parameter(torch.zeros(base.out_features, r, device=dev, dtype=torch.float32))
+        torch.nn.init.kaiming_uniform_(self.lora_A, a=5 ** 0.5)
+        self.drop = torch.nn.Dropout(dropout)
+
+    @property
+    def weight(self):  # SmolVLA reads q_proj.weight.dtype
+        return self.base.weight
+
+    @property
+    def in_features(self):
+        return self.base.in_features
+
+    @property
+    def out_features(self):
+        return self.base.out_features
+
+    def forward(self, x):
+        y = self.base(x)
+        A, B = self.lora_A.to(x.dtype), self.lora_B.to(x.dtype)  # bf16 VLM weights at inference; autocast in training
+        return y + (self.scale * (self.drop(x) @ A.t() @ B.t())).to(y.dtype)
+
+    def delta(self):
+        return (self.scale * self.lora_B @ self.lora_A).to(self.base.weight.dtype)
+
+
+def lora_scope(policy, args):
+    """Module whose Linear layers get LoRA: the VLM (vision encoder, connector, language layers) or everything."""
+    if args.policy != "smolvla":
+        raise SystemExit("--lora_rank is implemented for --policy smolvla only")
+    vwe = policy.model.vlm_with_expert
+    return [vwe.vlm] if args.lora_targets == "vlm" else [vwe.vlm, vwe.lm_expert]
+
+
+def add_lora(policy, args):
+    """Wrap Linear layers in LoRA. With targets 'vlm' the VLM base weights are frozen and only its adapters
+    train, the action expert and projections train fully; with 'all' the expert is LoRA too."""
+    for scope in lora_scope(policy, args):
+        for p in scope.parameters():
+            p.requires_grad = False
+        for name, mod in list(scope.named_modules()):
+            for cname, child in list(mod.named_children()):
+                if isinstance(child, torch.nn.Linear) and cname != "lm_head":
+                    setattr(mod, cname, LoRALinear(child, args.lora_rank, args.lora_alpha or 2 * args.lora_rank,
+                                                   args.lora_dropout))
+
+
+def lora_modules(policy):
+    """(parent, child name, LoRALinear) for every adapter."""
+    return [(mod, cname, child) for mod in policy.modules() for cname, child in mod.named_children()
+            if isinstance(child, LoRALinear)]
+
+
+class merged_lora:
+    """Context: LoRA folded into plain Linear layers (a standard checkpoint for save_pretrained), restored after."""
+
+    def __init__(self, policy):
+        self.policy = policy
+
+    def __enter__(self):
+        self.saved = []
+        with torch.no_grad():
+            for mod, cname, lo in lora_modules(self.policy):
+                self.saved.append((mod, cname, lo, lo.base.weight.detach().cpu().clone()))
+                lo.base.weight += lo.delta()
+                setattr(mod, cname, lo.base)
+
+    def __exit__(self, *exc):
+        with torch.no_grad():
+            for mod, cname, lo, w in self.saved:
+                lo.base.weight.copy_(w.to(lo.base.weight.device))
+                setattr(mod, cname, lo)
+
+
 def build_policy(args, stats):
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.configs.types import FeatureType, PolicyFeature
@@ -281,7 +365,11 @@ def build_policy(args, stats):
     for kv in args.override:  # e.g. --override dtype=bfloat16 gradient_checkpointing=true train_expert_only=true
         k, v = kv.split("=", 1)
         setattr(cfg, k, json.loads(v) if v.lower() in ("true", "false") or v.replace(".", "").replace("-", "").isdigit() else v)
+    if args.lora_rank:  # the VLM stays in train mode (adapter dropout); add_lora freezes its base weights
+        cfg.train_expert_only, cfg.freeze_vision_encoder = False, False
     policy = get_policy_class(cfg.type).from_pretrained(base, config=cfg).to("cuda")
+    if args.lora_rank:
+        add_lora(policy, args)
     pre, post = make_pre_post_processors(cfg, dataset_stats=stats)
     optim = cfg.get_optimizer_preset().build(policy.get_optim_params())
     sched = cfg.get_scheduler_preset().build(optim, num_training_steps=args.steps) if cfg.get_scheduler_preset() else None
@@ -332,6 +420,7 @@ def main():
     ap.add_argument("--data", choices=["both", "handover", "cubes"], default="both")
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument("--grad_accum", type=int, default=1, help="micro-batches per optimizer step (effective batch = batch * grad_accum)")
     ap.add_argument("--chunk", type=int, default=20, help="actions per prediction (20 @ 6 Hz = 3.3 s)")
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--curriculum", default=None, help="JSON file with a custom plan (see DEFAULT_CURRICULUM)")
@@ -341,6 +430,14 @@ def main():
     ap.add_argument("--no_gripper_lag_fix", action="store_true")
     ap.add_argument("--bf16", action="store_true", help="bfloat16 autocast (Ampere+ GPUs)")
     ap.add_argument("--override", nargs="*", default=[], help="policy config overrides key=value")
+    ap.add_argument("--lora_rank", type=int, default=0, help="LoRA rank for SmolVLA (0 = off); checkpoints are saved merged")
+    ap.add_argument("--lora_alpha", type=float, default=None, help="LoRA scale numerator (default 2 * rank)")
+    ap.add_argument("--lora_dropout", type=float, default=0.0, help="> 0 keeps a dropout copy of every adapted input (memory)")
+    ap.add_argument("--lora_targets", choices=["vlm", "all"], default="vlm",
+                    help="vlm: adapters on the VLM, action expert trained fully; all: adapters on the expert too")
+    ap.add_argument("--log_every", type=int, default=100)
+    ap.add_argument("--save_every", type=int, default=500, help="write <out>/resume_state.pt every N steps (0 = off)")
+    ap.add_argument("--resume", action="store_true", help="continue from <out>/resume_state.pt if it exists")
     ap.add_argument("--val_every", type=int, default=1000)
     ap.add_argument("--val_batches", type=int, default=4)
     ap.add_argument("--workers", type=int, default=8)
@@ -392,38 +489,78 @@ def main():
 
     def save(tag):
         d = out / tag
-        policy.save_pretrained(d)
+        if args.lora_rank:
+            d.mkdir(parents=True, exist_ok=True)
+            torch.save({n: p.detach().cpu() for n, p in policy.named_parameters() if p.requires_grad},
+                       d / "trainable_params.pt")  # adapters + fully trained parts, to resume or inspect
+            with merged_lora(policy):
+                policy.save_pretrained(d)
+        else:
+            policy.save_pretrained(d)
         pre.save_pretrained(d)
         post.save_pretrained(d)
         (out / "curriculum_log.json").write_text(json.dumps(log, indent=1))
         print(f"saved {d}", flush=True)
 
-    step, t0 = 0, time.time()
+    resume_file = out / "resume_state.pt"
+
+    def save_resume():
+        """Trainable weights + optimizer/scheduler + step, written atomically (a crash mid-write keeps the old one)."""
+        tmp = resume_file.with_suffix(".tmp")
+        torch.save({"step": step, "log": log, "optim": optim.state_dict(),
+                    "sched": sched.state_dict() if sched is not None else None,
+                    "params": {n: p.detach().cpu() for n, p in policy.named_parameters() if p.requires_grad}}, tmp)
+        tmp.replace(resume_file)
+        print(f"resume state saved at step {step}", flush=True)
+
+    step = 0
+    if args.resume and resume_file.exists():
+        st = torch.load(resume_file, map_location="cpu", weights_only=False)
+        unexpected = policy.load_state_dict(st["params"], strict=False).unexpected_keys  # frozen weights are not stored
+        assert not unexpected, f"resume state does not match the model: {unexpected[:5]}"
+        optim.load_state_dict(st["optim"])
+        if sched is not None and st["sched"] is not None:
+            sched.load_state_dict(st["sched"])
+        step, log = st["step"], st["log"]
+        del st
+        print(f"resumed from {resume_file} at step {step}", flush=True)
+    elif args.resume:
+        print(f"--resume: no {resume_file}, starting from scratch", flush=True)
+    step0, t0 = step, time.time()
+    stage_end = np.cumsum(stage_steps)
     seen = []
     for si, (stage, n_steps) in enumerate(zip(plan["stages"], stage_steps)):
         new = [s for s in stage["skills"] if s not in seen]
         seen += new
+        if step >= stage_end[si]:  # finished before the resume (its checkpoint is already saved)
+            continue
         w = train.weights(stage["skills"], new, plan.get("new_skill_weight", 0.7))
         mix = {str(g): round(float(w[train.groups == g].sum()), 3) for g in np.unique(train.groups) if w[train.groups == g].sum() > 0}
         print(f"\n=== {stage['name']}: {n_steps} steps, new skills {new}, sample mix {mix}", flush=True)
-        log["stages"].append({"name": stage["name"], "steps": int(n_steps), "new_skills": new, "sample_mix": mix})
-        sampler = WeightedRandomSampler(torch.tensor(w), num_samples=int(n_steps) * args.batch, replacement=True)
+        if not any(s["name"] == stage["name"] for s in log["stages"]):
+            log["stages"].append({"name": stage["name"], "steps": int(n_steps), "new_skills": new, "sample_mix": mix})
+        todo = int(stage_end[si] - step)
+        sampler = WeightedRandomSampler(torch.tensor(w), num_samples=todo * args.batch * args.grad_accum,
+                                        replacement=True)
         dl = DataLoader(train, batch_size=args.batch, sampler=sampler, num_workers=args.workers, pin_memory=True,
                         drop_last=True, persistent_workers=False)
         policy.train()
-        for batch in dl:
-            step += 1
+        optim.zero_grad(set_to_none=True)
+        for micro, batch in enumerate(dl, 1):
             batch = pre(batch)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
                 loss, _ = policy.forward(batch)
-            optim.zero_grad(set_to_none=True)
-            loss.backward()
+            (loss / args.grad_accum).backward()
+            if micro % args.grad_accum:
+                continue
+            step += 1
             gn = torch.nn.utils.clip_grad_norm_(policy.parameters(), 10.0)
             optim.step()
+            optim.zero_grad(set_to_none=True)
             if sched is not None:
                 sched.step()
-            if step % 100 == 0:
-                rate = step / (time.time() - t0)
+            if step % args.log_every == 0:
+                rate = (step - step0) / (time.time() - t0)
                 print(f"[{stage['name']}] step {step}/{args.steps} loss {loss.item():.4f} grad {gn:.2f} "
                       f"lr {optim.param_groups[0]['lr']:.1e} | {rate:.2f} it/s, eta {(args.steps - step) / rate / 60:.0f} min, "
                       f"mem {torch.cuda.max_memory_allocated() / 2**30:.1f} GB", flush=True)
@@ -431,10 +568,14 @@ def main():
                 v = validate(policy, pre, post, vsets)
                 log["val"].append({"step": step, "stage": stage["name"], **v})
                 print(f"VAL {step}: " + " | ".join(f"{k} {x['l1_norm']} ({x['arm_rad']} rad)" for k, x in v.items()), flush=True)
+            if args.save_every and step % args.save_every == 0 and step < stage_end[si]:
+                save_resume()
         v = validate(policy, pre, post, vsets)
         log["val"].append({"step": step, "stage": stage["name"], "end_of_stage": True, **v})
         print(f"VAL end of {stage['name']}: " + " | ".join(f"{k} {x['l1_norm']} ({x['arm_rad']} rad)" for k, x in v.items()), flush=True)
         save(stage["name"])
+        if args.save_every:
+            save_resume()
     save("final")
     print(f"done in {(time.time() - t0) / 60:.1f} min", flush=True)
 
