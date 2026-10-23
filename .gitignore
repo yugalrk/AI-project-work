@@ -1,0 +1,19 @@
+# models and data are shared separately, never committed
+Datasets/
+Environment/
+outputs/
+checkpoints/
+scene/
+eval_assets/
+eval_results/
+subtask_qa/
+*.usd
+*.safetensors
+*.parquet
+*.mp4
+*.zip
+rand500_labels.csv
+__pycache__/
+*.pyc
+.venv/
+*.log

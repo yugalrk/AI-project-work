@@ -1,0 +1,12 @@
+# Policy server / training side (NOT needed inside Isaac Sim's Python).
+# Install CUDA PyTorch first, matching your driver, e.g.:
+#   pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu128
+lerobot[smolvla]==0.4.4
+transformers==4.57.6
+av==15.1.0
+numpy==2.2.6
+pandas
+pyarrow
+fastdtw==0.3.4
+scipy
+truststore        # only needed behind corporate TLS proxies
