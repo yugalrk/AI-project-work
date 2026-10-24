@@ -76,3 +76,15 @@ python serve_policy.py --checkpoint outputs/smolvla_handover/step_003000 --port 
 Known sim gap: the hand-out scene lacks the recorder's override layers (`cameras_v9_overrides.usda`,
 `rand_v7_boxpose_overrides.usda`, `handover_root_v9_light_boxpose.usda`; listed in the dataset's
 `fr3_episodes_extra.jsonl` stack_lock), so even the recorded demo does not grasp the box in the sim.
+
+## Robot model, retargeting, box-grid LUT and demo UIs
+
+| Area | Files |
+|---|---|
+| Robot model (FK) | `fk_fr3duo.py` + `geometry/fr3duo_scene_chain.json` (extracted from the scene USD by `tools/extract_scene_kinematics.py`; matches Franka's official FR3v2 / FR3 Duo description to 0.000 mm) |
+| Head camera model | `tools/head_camera_model.py` -> `geometry/head_camera.json` (scene pose + recorder intrinsics) |
+| Retargeting (IK) | `tools/retarget_trajectory.py`: damped least squares, 6-D pose, null space pulled to the recorded joints, joint limits |
+| Box-grid dataset + LUT | `tools/augment_box_grid.py` (5 cm grid over the cart top -> ok / out_of_reach / off_cart, writes `Datasets/.../Augmented`), `tools/camera_grid.py` (camera -> cart plane -> grid cell) |
+| Trajectory policy (no model) | `Environment/fr3duo_policy_server.py --trajectory`: recorded handover as a closed-loop lookup; `tools/test_trajectory_policy.py` |
+| Model probes | `tools_show_io.py` (SmolVLA inputs/outputs), `tools_ablation.py` (camera / state ablations) |
+| Demo UIs | `demo_ui/` (handover explorer site, sub-task splitting page, box grid player, XYZ views); see `demo_ui/README.md` |

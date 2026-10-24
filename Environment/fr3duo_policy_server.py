@@ -142,6 +142,60 @@ class LeRobotPolicy:
         return action.squeeze(0).float().cpu().numpy()
 
 
+class TrajectoryPolicy:
+    """No learned model: the recorded handover as a closed-loop lookup table. All 84 handover episodes have the
+    same start pose and identical actions (only the lighting differs), so one recorded trajectory is the task.
+
+    act(): find where along the recording the robot is now (nearest recorded state among the next `step` frames:
+    never more than 1/policy_hz s ahead per call), then return the recorded action for 1/policy_hz s later. A robot
+    that lags or is blocked is waited for. Where the recording itself stands still (e.g. a gripper closing), nearest-
+    state matching cannot see progress, so there the index advances on time once the robot is at that pose."""
+
+    fake = False
+    policy_type = "trajectory-handover"
+    input_features = DummyPolicy.input_features
+    output_features = DummyPolicy.output_features
+
+    def __init__(self, dataset_root, episode=0, policy_hz=6.0, fps=30, still_rad=0.002, near_rad=0.02):
+        import glob
+        import os
+
+        import pandas as pd
+
+        files = sorted(glob.glob(os.path.join(dataset_root, "data", "chunk-*", "*.parquet")))
+        df = pd.concat(pd.read_parquet(f, columns=["episode_index", "frame_index", "observation.state", "action"]) for f in files)
+        d = df[df.episode_index == episode].sort_values("frame_index")
+        if d.empty:
+            raise SystemExit(f"episode {episode} not found in {dataset_root}")
+        self.S = np.stack(d["observation.state"].to_numpy()).astype(np.float32)
+        self.A = np.stack(d["action"].to_numpy()).astype(np.float32)
+        self.step = max(1, int(round(fps / policy_hz)))
+        self.still, self.near = still_rad, near_rad
+        self.w = np.ones(16, np.float32)
+        self.w[[7, 15]] = 0.2  # gripper readings depend on the sim's joint->state mapping: trust them less
+        self.checkpoint = f"trajectory: {dataset_root} episode {episode} ({len(self.A)} frames)"
+        self.n_action_steps, self.chunk_size = 1, 1
+        self.reset()
+
+    def reset(self):
+        self.i = 0
+
+    def dist(self, a, b):
+        return float((np.abs(np.asarray(a, np.float32) - b) * self.w).mean())
+
+    def phase(self, state):
+        lo, nxt = self.i, min(self.i + self.step, len(self.S) - 1)
+        d = (np.abs(self.S[lo:nxt + 1] - np.asarray(state, np.float32)) * self.w).mean(1)
+        j = lo + int(np.argmax(d <= d.min() + 1e-6))  # earliest best match: never skip ahead within ties
+        if self.dist(self.S[nxt], self.S[lo]) < self.still and d[0] < self.near:  # recording stands still here
+            j = nxt
+        return j
+
+    def act(self, obs, task):
+        self.i = self.phase(obs["observation.state"])
+        return self.A[min(self.i + self.step - 1, len(self.A) - 1)].copy()
+
+
 class GraspDeepener:
     """Inference-time grasp shaping, no retraining. When the model first commands a gripper to close, keep that
     gripper at its pre-grasp opening and continue the arm's approach (mean joint velocity of the last second of
@@ -278,6 +332,8 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--checkpoint", help="pretrained_model folder or Hugging Face repo id")
     source.add_argument("--dummy", action="store_true", help="hold-pose policy for bridge tests (FAKE results)")
+    source.add_argument("--trajectory", action="store_true",
+                        help="no model: the recorded handover as a closed-loop lookup table (see TrajectoryPolicy)")
     source.add_argument("--replay-episode", type=int, metavar="N",
                         help="play back the recorded actions of dataset episode N (sim check, FAKE results)")
     parser.add_argument("--dataset", default="/mnt/c/Users/User/Desktop/Hack2026/C2_Teach-the-robot_VLA/Environment/"
@@ -299,6 +355,8 @@ def main():
 
     if args.dummy:
         policy = DummyPolicy()
+    elif args.trajectory:
+        policy = TrajectoryPolicy(args.dataset, policy_hz=args.policy_hz)
     elif args.replay_episode is not None:
         policy = ReplayPolicy(args.dataset, args.replay_episode)
     else:

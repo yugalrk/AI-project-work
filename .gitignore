@@ -23,3 +23,7 @@ deploy/
 trained checkpoint/
 *.pt
 *.tar
+/site/
+/subtask_demo/
+geometry/franka_description/
+.claude/
